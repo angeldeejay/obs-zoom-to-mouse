@@ -51,6 +51,8 @@ local osx_mouse_location = nil
 local use_auto_follow_mouse = true
 local use_follow_outside_bounds = false
 local is_following_mouse = false
+local force_16_9 = true
+local auto_start = false
 local follow_speed = 0.1
 local follow_border = 0
 local follow_safezone_sensitivity = 10
@@ -86,6 +88,8 @@ local version = obs.obs_get_version_string()
 local m1, m2 = version:match("(%d+%.%d+)%.(%d+)")
 local major = tonumber(m1) or 0
 local minor = tonumber(m2) or 0
+
+local __ar16_9__ = 16 / 9
 
 -- Define the mouse cursor functions for each platform
 if ffi.os == "Windows" then
@@ -617,7 +621,7 @@ function refresh_sceneitem(find_newest)
                 source_height = monitor_info.height
             else
                 log("ERROR: Something went wrong determining source size.\n" ..
-                "       Try using the 'Set manual source position' option and adding override values")
+                    "       Try using the 'Set manual source position' option and adding override values")
             end
         else
             log("Using source size: " .. source_width .. ", " .. source_height)
@@ -784,7 +788,8 @@ function get_target_position(zoom)
     -- Remember that because we are using a crop/pad filter making the size smaller (dividing by zoom) means that we see less of the image
     -- in the same amount of space making it look bigger (aka zoomed in)
     local new_size = {
-        width = zoom.source_size.width / zoom.zoom_to,
+        -- if aspect ratio should be fixed to 16:9, compute width from height instead of getting directly from display size
+        width = (force_16_9 and (zoom.source_size.height * __ar16_9__) or zoom.source_size.width) / zoom.zoom_to,
         height = zoom.source_size.height / zoom.zoom_to
     }
 
@@ -825,11 +830,27 @@ function on_toggle_follow(pressed)
     end
 end
 
-function on_toggle_zoom(pressed)
-    if pressed then
+function on_toggle_zoom(pressed, force_value)
+    if force_value or pressed then
         -- Check if we are in a safe state to zoom
-        if zoom_state == ZoomState.ZoomedIn or zoom_state == ZoomState.None then
-            if zoom_state == ZoomState.ZoomedIn then
+        if force_value or zoom_state == ZoomState.ZoomedIn or zoom_state == ZoomState.None then
+            local should_zoom
+            if force_value == nil then
+                should_zoom = zoom_state == ZoomState.ZoomedIn or zoom_state == ZoomState.None
+            else
+                should_zoom = force_value
+            end
+
+            if should_zoom then
+                log("Zooming in")
+                -- To zoom in, we get a new target based on where the mouse was when zoom was clicked
+                zoom_state = ZoomState.ZoomingIn
+                zoom_info.zoom_to = zoom_value
+                zoom_time = 0
+                locked_center = nil
+                locked_last_pos = nil
+                zoom_target = get_target_position(zoom_info)
+            else
                 log("Zooming out")
                 -- To zoom out, we set the target back to whatever it was originally
                 zoom_state = ZoomState.ZoomingOut
@@ -841,15 +862,6 @@ function on_toggle_zoom(pressed)
                     is_following_mouse = false
                     log("Tracking mouse is off (due to zoom out)")
                 end
-            else
-                log("Zooming in")
-                -- To zoom in, we get a new target based on where the mouse was when zoom was clicked
-                zoom_state = ZoomState.ZoomingIn
-                zoom_info.zoom_to = zoom_value
-                zoom_time = 0
-                locked_center = nil
-                locked_last_pos = nil
-                zoom_target = get_target_position(zoom_info)
             end
 
             -- Since we are zooming we need to start the timer for the animation and tracking
@@ -1136,6 +1148,11 @@ function on_settings_modified(props, prop, settings)
         end
     end
 
+    if auto_start then
+        on_toggle_zoom(true, true)
+    else
+        on_toggle_zoom(true, false)
+    end
     return false
 end
 
@@ -1164,6 +1181,8 @@ function log_current_settings()
         socket_port = socket_port,
         socket_poll = socket_poll,
         debug_logs = debug_logs,
+        force_16_9 = force_16_9,
+        auto_start = auto_start,
         version = VERSION
     }
 
@@ -1183,6 +1202,7 @@ function on_print_help()
         "Zoom Factor: How much to zoom in by\n" ..
         "Zoom Speed: The speed of the zoom in/out animation\n" ..
         "Auto follow mouse: True to track the cursor while you are zoomed in\n" ..
+        "Force 16:9: True to get zoomed window as 16:9 (fixes problems with wide resolutions)\n" ..
         "Follow outside bounds: True to track the cursor even when it is outside the bounds of the source\n" ..
         "Follow Speed: The speed at which the zoomed area will follow the mouse when tracking\n" ..
         "Follow Border: The %distance from the edge of the source that will re-enable mouse tracking\n" ..
@@ -1238,6 +1258,8 @@ function script_properties()
     -- Add the rest of the settings UI
     local zoom = obs.obs_properties_add_float(props, "zoom_value", "Zoom Factor", 1, 5, 0.5)
     local zoom_speed = obs.obs_properties_add_float_slider(props, "zoom_speed", "Zoom Speed", 0.01, 1, 0.01)
+    local auto_start = obs.obs_properties_add_bool(props, "auto_start", "Auto start ")
+    local force_16_9 = obs.obs_properties_add_bool(props, "force_16_9", "Force 16:9 aspect ratio ")
     local follow = obs.obs_properties_add_bool(props, "follow", "Auto follow mouse ")
     obs.obs_property_set_long_description(follow,
         "When enabled mouse traking will auto-start when zoomed in without waiting for tracking toggle hotkey")
@@ -1373,6 +1395,8 @@ function script_load(settings)
     socket_port = obs.obs_data_get_int(settings, "socket_port")
     socket_poll = obs.obs_data_get_int(settings, "socket_poll")
     debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
+    auto_start = obs.obs_data_get_bool(settings, "auto_start")
+    force_16_9 = obs.obs_data_get_bool(settings, "force_16_9")
 
     obs.obs_frontend_add_event_callback(on_frontend_event)
 
@@ -1431,6 +1455,10 @@ function script_unload()
     if socket_server ~= nil then
         stop_server()
     end
+
+    if auto_start then
+        on_toggle_zoom(true, false)
+    end
 end
 
 function script_defaults(settings)
@@ -1457,6 +1485,8 @@ function script_defaults(settings)
     obs.obs_data_set_default_int(settings, "socket_port", 12345)
     obs.obs_data_set_default_int(settings, "socket_poll", 10)
     obs.obs_data_set_default_bool(settings, "debug_logs", false)
+    obs.obs_data_set_default_bool(settings, "force_16_9", true)
+    obs.obs_data_set_default_bool(settings, "auto_start", false)
 end
 
 function script_save(settings)
@@ -1513,6 +1543,8 @@ function script_update(settings)
     socket_port = obs.obs_data_get_int(settings, "socket_port")
     socket_poll = obs.obs_data_get_int(settings, "socket_poll")
     debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
+    force_16_9 = obs.obs_data_get_bool(settings, "force_16_9")
+    auto_start = obs.obs_data_get_bool(settings, "auto_start")
 
     -- Only do the expensive refresh if the user selected a new source
     if source_name ~= old_source_name and is_obs_loaded then
@@ -1544,6 +1576,12 @@ function script_update(settings)
     elseif use_socket and (old_poll ~= socket_poll or old_port ~= socket_port) then
         stop_server()
         start_server()
+    end
+
+    if auto_start then
+        on_toggle_zoom(true, true)
+    else
+        on_toggle_zoom(true, false)
     end
 end
 
