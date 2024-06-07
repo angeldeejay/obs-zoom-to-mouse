@@ -1148,10 +1148,8 @@ function on_settings_modified(props, prop, settings)
         end
     end
 
-    if auto_start then
-        on_toggle_zoom(true, true)
-    else
-        on_toggle_zoom(true, false)
+    if auto_start ~= nil then
+        on_toggle_zoom(true, auto_start)
     end
     return false
 end
@@ -1578,10 +1576,20 @@ function script_update(settings)
         start_server()
     end
 
-    if auto_start then
-        on_toggle_zoom(true, true)
-    else
-        on_toggle_zoom(true, false)
+    if auto_start ~= nil and source == nil then
+        local timer_interval = math.floor(obs.obs_get_frame_interval_ns() / 100000)
+        obs.timer_add(wait_for_auto_start, timer_interval)
+    elseif auto_start ~= nil and source ~= nil then
+        on_toggle_zoom(true, auto_start)
+    end
+end
+
+function wait_for_auto_start()
+    local found_source = obs.obs_get_source_by_name(source_name)
+    if found_source ~= nil then
+        source = found_source
+        on_toggle_zoom(true, auto_start)
+        obs.remove_current_callback()
     end
 end
 
