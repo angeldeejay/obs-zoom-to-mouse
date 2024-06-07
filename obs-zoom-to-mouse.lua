@@ -52,7 +52,7 @@ local use_auto_follow_mouse = true
 local use_follow_outside_bounds = false
 local is_following_mouse = false
 local force_16_9 = true
-local auto_start = false
+local lock_in = false
 local follow_speed = 0.1
 local follow_border = 0
 local follow_safezone_sensitivity = 10
@@ -621,7 +621,7 @@ function refresh_sceneitem(find_newest)
                 source_height = monitor_info.height
             else
                 log("ERROR: Something went wrong determining source size.\n" ..
-                    "       Try using the 'Set manual source position' option and adding override values")
+                "       Try using the 'Set manual source position' option and adding override values")
             end
         else
             log("Using source size: " .. source_width .. ", " .. source_height)
@@ -1148,10 +1148,8 @@ function on_settings_modified(props, prop, settings)
         end
     end
 
-    if auto_start then
-        on_toggle_zoom(true, true)
-    else
-        on_toggle_zoom(true, false)
+    if lock_in ~= nil then
+        on_toggle_zoom(true, lock_in)
     end
     return false
 end
@@ -1182,7 +1180,7 @@ function log_current_settings()
         socket_poll = socket_poll,
         debug_logs = debug_logs,
         force_16_9 = force_16_9,
-        auto_start = auto_start,
+        lock_in = lock_in,
         version = VERSION
     }
 
@@ -1258,7 +1256,9 @@ function script_properties()
     -- Add the rest of the settings UI
     local zoom = obs.obs_properties_add_float(props, "zoom_value", "Zoom Factor", 1, 5, 0.5)
     local zoom_speed = obs.obs_properties_add_float_slider(props, "zoom_speed", "Zoom Speed", 0.01, 1, 0.01)
-    local auto_start = obs.obs_properties_add_bool(props, "auto_start", "Auto start ")
+    local lock_in = obs.obs_properties_add_bool(props, "lock_in", "Lock-In ")
+    obs.obs_property_set_long_description(lock_in,
+        "When enabled, auto zoom feature cannot be disabled manually, and auto zoom restarts with OBS too")
     local force_16_9 = obs.obs_properties_add_bool(props, "force_16_9", "Force 16:9 aspect ratio ")
     local follow = obs.obs_properties_add_bool(props, "follow", "Auto follow mouse ")
     obs.obs_property_set_long_description(follow,
@@ -1395,7 +1395,7 @@ function script_load(settings)
     socket_port = obs.obs_data_get_int(settings, "socket_port")
     socket_poll = obs.obs_data_get_int(settings, "socket_poll")
     debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
-    auto_start = obs.obs_data_get_bool(settings, "auto_start")
+    lock_in = obs.obs_data_get_bool(settings, "lock_in")
     force_16_9 = obs.obs_data_get_bool(settings, "force_16_9")
 
     obs.obs_frontend_add_event_callback(on_frontend_event)
@@ -1456,7 +1456,7 @@ function script_unload()
         stop_server()
     end
 
-    if auto_start then
+    if lock_in then
         on_toggle_zoom(true, false)
     end
 end
@@ -1486,7 +1486,7 @@ function script_defaults(settings)
     obs.obs_data_set_default_int(settings, "socket_poll", 10)
     obs.obs_data_set_default_bool(settings, "debug_logs", false)
     obs.obs_data_set_default_bool(settings, "force_16_9", true)
-    obs.obs_data_set_default_bool(settings, "auto_start", false)
+    obs.obs_data_set_default_bool(settings, "lock_in", false)
 end
 
 function script_save(settings)
@@ -1544,7 +1544,7 @@ function script_update(settings)
     socket_poll = obs.obs_data_get_int(settings, "socket_poll")
     debug_logs = obs.obs_data_get_bool(settings, "debug_logs")
     force_16_9 = obs.obs_data_get_bool(settings, "force_16_9")
-    auto_start = obs.obs_data_get_bool(settings, "auto_start")
+    lock_in = obs.obs_data_get_bool(settings, "lock_in")
 
     -- Only do the expensive refresh if the user selected a new source
     if source_name ~= old_source_name and is_obs_loaded then
@@ -1578,10 +1578,20 @@ function script_update(settings)
         start_server()
     end
 
-    if auto_start then
-        on_toggle_zoom(true, true)
-    else
-        on_toggle_zoom(true, false)
+    if lock_in ~= nil and source == nil then
+        local timer_interval = math.floor(obs.obs_get_frame_interval_ns() / 100000)
+        obs.timer_add(wait_for_auto_start, timer_interval)
+    elseif lock_in ~= nil and source ~= nil then
+        on_toggle_zoom(true, lock_in)
+    end
+end
+
+function wait_for_auto_start()
+    local found_source = obs.obs_get_source_by_name(source_name)
+    if found_source ~= nil then
+        source = found_source
+        on_toggle_zoom(true, lock_in)
+        obs.remove_current_callback()
     end
 end
 
